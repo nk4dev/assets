@@ -1,13 +1,4 @@
----
-title: Profile | nknighta
-description: nknighta portfolio and blog
-url: https://nknighta.me/
-image: https://nknighta.me/images/og.png
-siteName: Profile | nknighta
-type: website
-twitterCard: summary_large_image
-twitterSite: @ama_dev_1
----
+
 window.dataLayer = window.dataLayer || \[\]; function gtag(){dataLayer.push(arguments);} gtag('js', new Date()); gtag('config', 'G-9TG7JEDDCX', { page\_path: window.location.pathname, });
 
 [Nknight AMAMIYA](https://nknighta.me/)

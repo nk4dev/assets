@@ -1,13 +1,4 @@
----
-title: Profile | nknighta
-description: nknighta portfolio and blog
-url: https://nknighta.me/
-image: https://nknighta.me/images/og.png
-siteName: Profile | nknighta
-type: website
-twitterCard: summary_large_image
-twitterSite: @ama_dev_1
----
+
 # Nknight AMAMIYA
 
 ---

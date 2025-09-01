@@ -1,13 +1,4 @@
----
-title: Blog | nknighta
-description: Nknight AMAMIYA'S Blog
-url: https://nknighta.me/blog
-image: https://nknighta.me/images/og.png
-siteName: Blog | nknighta
-type: website
-twitterCard: summary_large_image
-twitterSite: @ama_dev_1
----
+
 # Nknight AMAMIYA
 
 ## ブログ
