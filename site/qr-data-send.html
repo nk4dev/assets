@@ -85,8 +85,15 @@ button.btn.primary { background: var(--accent); border-color: var(--accent); col
 button.btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .stage { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.qrbox { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 6px; width: min(100%, 440px); }
-.qrbox canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+/* QRは常に白地・黒。テーマに関わらず固定し、周囲に十分な余白(静寂領域)を取る */
+.qrbox { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: min(100%, 560px); }
+.qrbox canvas { display: block; width: 100%; height: auto; }
+.stage:fullscreen { justify-content: center; background: var(--bg); padding: 16px; }
+.stage:fullscreen .qrbox { width: min(94vw, calc(100vh - 120px)); }
+.stage:fullscreen .tips, .stage:fullscreen .stats { display: none; }
+details.adv { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 10px 12px; }
+details.adv summary { cursor: pointer; font-size: 0.88rem; color: var(--muted); font-weight: 600; }
+details.adv[open] summary { margin-bottom: 12px; }
 .counter { font: 600 1.1rem var(--font-data); font-variant-numeric: tabular-nums; }
 .stats { font: 12.5px/1.7 var(--font-data); color: var(--muted); text-align: center; overflow-wrap: anywhere; }
 
@@ -133,7 +140,7 @@ pre.preview { margin: 0; max-height: 220px; overflow: auto; background: var(--bg
   <header>
     <h1>QR転送プロト</h1>
     <p class="lede">データを連続QRコードに分割して表示し、別の端末のカメラで読み取って復元します。通信は使いません。</p>
-    <p class="proto-tag">QT1 / 分割 + CRC32 + gzip + SHA-256</p>
+    <p class="proto-tag">QT2 / 先頭にメタ情報 + 分割 + CRC32 + gzip + SHA-256 / Base45(英数字モードQR)</p>
   </header>
 
   <div class="tabs" role="tablist">
@@ -163,22 +170,35 @@ Hello from a stream of QR codes.</textarea>
       <label for="file">またはファイル(1MBまで。選ぶとテキストより優先)</label>
       <input id="file" type="file">
     </div>
+    <div class="field">
+      <label for="preset">読み取りやすさ</label>
+      <select id="preset">
+        <option value="stable">安定: QRを大きく粗く(遅い)</option>
+        <option value="normal" selected>標準</option>
+        <option value="fast">高速: QRが細かい(読み取り側の条件が良いとき)</option>
+        <option value="custom">カスタム</option>
+      </select>
+    </div>
+    <details class="adv">
+      <summary>詳細設定</summary>
     <div class="row">
       <div class="field">
         <span class="label">1フレームのデータ量</span>
-        <div class="range"><input id="chunk" type="range" min="100" max="800" step="50" value="300" aria-label="1フレームのデータ量"><output id="chunkOut">300 B</output></div>
+        <div class="range"><input id="chunk" type="range" min="80" max="800" step="20" value="200" aria-label="1フレームのデータ量"><output id="chunkOut">200 B</output></div>
       </div>
       <div class="field">
         <span class="label">表示速度</span>
-        <div class="range"><input id="fps" type="range" min="1" max="15" step="1" value="5" aria-label="表示速度"><output id="fpsOut">5 fps</output></div>
+        <div class="range"><input id="fps" type="range" min="1" max="15" step="1" value="4" aria-label="表示速度"><output id="fpsOut">4 fps</output></div>
       </div>
       <div class="field">
         <label for="ecc">誤り訂正</label>
         <select id="ecc"><option value="L">L (7%)</option><option value="M" selected>M (15%)</option><option value="Q">Q (25%)</option></select>
       </div>
     </div>
+    </details>
     <div class="btns">
       <button type="button" class="btn primary" id="sendStart">QRを流す</button>
+      <button type="button" class="btn" id="sendFull" disabled>全画面</button>
       <button type="button" class="btn" id="sendToggle" disabled>一時停止</button>
       <button type="button" class="btn" id="sendPrev" disabled aria-label="前のフレーム">◀</button>
       <button type="button" class="btn" id="sendNext" disabled aria-label="次のフレーム">▶</button>
@@ -188,6 +208,7 @@ Hello from a stream of QR codes.</textarea>
       <div class="qrbox"><canvas id="qr" aria-label="転送中のQRコード"></canvas></div>
       <div class="counter" id="sendCounter">0 / 0</div>
       <div class="stats" id="sendStats"></div>
+      <p class="notice tips">画面の明るさを最大にし、自動消灯をオフにします。受信側はQR全体が映る距離で、ピントが合うまで待ってください。</p>
     </div>
   </section>
 
@@ -203,11 +224,26 @@ Hello from a stream of QR codes.</textarea>
       <button type="button" class="btn" id="camStop" disabled>停止</button>
       <button type="button" class="btn" id="recvReset">受信をリセット</button>
     </div>
+    <div class="field" id="zoomWrap" hidden>
+      <span class="label">ズーム</span>
+      <div class="range"><input id="zoom" type="range" aria-label="ズーム"><output id="zoomOut">1.0x</output></div>
+    </div>
     <div class="status" id="recvMsg" role="status">送信側のQRにカメラを向けてください。</div>
     <div class="progress">
       <div class="readout"><span id="recvCount">0 / 0</span><span class="muted" id="recvInfo">待機中</span></div>
       <div class="bar"><i id="recvBar"></i></div>
       <canvas id="grid" width="640" height="16" aria-label="受信済みフレームの一覧"></canvas>
+    </div>
+    <div class="result" id="metaCard" hidden>
+      <div><span class="badge ok">メタ情報を受信</span></div>
+      <dl>
+        <dt>名前</dt><dd id="metaName"></dd>
+        <dt>種類</dt><dd id="metaMime"></dd>
+        <dt>サイズ</dt><dd id="metaSize"></dd>
+        <dt>フレーム数</dt><dd id="metaFrames"></dd>
+        <dt>取得元</dt><dd id="metaUrl"></dd>
+        <dt>SHA-256</dt><dd id="metaHash"></dd>
+      </dl>
     </div>
     <div class="result" id="result" hidden>
       <div><span class="badge" id="resBadge"></span></div>
@@ -12643,11 +12679,16 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 /***/ })
 /******/ ])["default"];
 });</script>
-<script>// QR転送プロトコル QT1
-// フレーム形式: QT1|<セッションID 4桁hex>|<連番 0始まり>|<総数>|<CRC32 8桁hex>|<base64チャンク>
-// ペイロード: gzip( [4byte BE ヘッダ長][ヘッダJSON {n,t,s,h}][ファイル本体] )
+<script>// QR転送プロトコル QT2
+// フレーム形式: QT2-<セッションID 4桁HEX>-<連番 0始まり>-<総数>-<CRC32 8桁HEX>-<Base45チャンク>
+// 全文字がQRの英数字モード(0-9 A-Z 空白 $%*+-./:)に収まる。英数字モードは
+// バイトモードより約3割多く詰められるため、同じ量なら粗い(読みやすい)QRになる。
+// メタ情報フレーム: 連番が M のフレーム。ループの先頭で送り、本体が揃う前に受信側が
+//   名前・種類・サイズ・フレーム数を表示し、セッションを固定できるようにする。
+//   中身はJSON {n:名前, t:種類, s:元サイズ, z:圧縮後サイズ, f:フレーム数, h:SHA-256先頭16桁, u:取得元URL(表示用)}
+// ペイロード: gzip( [4byte BE ヘッダ長][ヘッダJSON {n,t,s,h,u?}][ファイル本体] )
 const QT = (() => {
-  const MAGIC = 'QT1';
+  const MAGIC = 'QT2';
 
   const crcTable = (() => {
     const t = new Uint32Array(256);
@@ -12667,19 +12708,49 @@ const QT = (() => {
 
   const hex = (n, w) => n.toString(16).padStart(w, '0');
 
-  function b64e(u8) {
+  // Base45 (RFC 9285): 2バイト→3文字、端数1バイト→2文字
+  const B45 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
+  const B45_INDEX = (() => {
+    const m = new Map();
+    for (let i = 0; i < B45.length; i++) m.set(B45[i], i);
+    return m;
+  })();
+
+  function b45e(u8) {
     let s = '';
-    for (let i = 0; i < u8.length; i += 0x8000) {
-      s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    let i = 0;
+    for (; i + 1 < u8.length; i += 2) {
+      const n = u8[i] * 256 + u8[i + 1];
+      s += B45[n % 45] + B45[Math.floor(n / 45) % 45] + B45[Math.floor(n / 2025)];
     }
-    return btoa(s);
+    if (i < u8.length) s += B45[u8[i] % 45] + B45[Math.floor(u8[i] / 45)];
+    return s;
   }
 
-  function b64d(s) {
-    const b = atob(s);
-    const u = new Uint8Array(b.length);
-    for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
-    return u;
+  // 不正な文字・値のときは null
+  function b45d(s) {
+    const v = [];
+    for (const ch of s) {
+      const x = B45_INDEX.get(ch);
+      if (x === undefined) return null;
+      v.push(x);
+    }
+    if (v.length % 3 === 1) return null;
+    const out = new Uint8Array(Math.floor(v.length / 3) * 2 + (v.length % 3 ? 1 : 0));
+    let o = 0;
+    let i = 0;
+    for (; i + 2 < v.length; i += 3) {
+      const n = v[i] + v[i + 1] * 45 + v[i + 2] * 2025;
+      if (n > 65535) return null;
+      out[o++] = n >> 8;
+      out[o++] = n & 255;
+    }
+    if (i < v.length) {
+      const n = v[i] + v[i + 1] * 45;
+      if (n > 255) return null;
+      out[o++] = n;
+    }
+    return out;
   }
 
   async function pipe(u8, stream) {
@@ -12709,28 +12780,72 @@ const QT = (() => {
     return gzip(raw);
   }
 
-  function makeFrames(payload, chunkSize, sid) {
-    sid = sid || hex(Math.floor(Math.random() * 0x10000), 4);
+  // メタ情報フレームを作る。データフレームと同じQR版に収まるよう、長さ(budget)を超えるときは
+  // 項目を削る(長いURLや名前を縮める)。QRが大きくなると全フレームが細かくなって読みにくいため。
+  // 縮めるのは表示用の値だけで、本体側のヘッダには完全なURLが残る。
+  function makeMeta(sid, total, info, budget) {
+    const trim = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s);
+    const build = (o) => {
+      const bytes = new TextEncoder().encode(JSON.stringify(o)); // undefinedの項目は出力されない
+      return [MAGIC, sid, 'M', total, hex(crc32(bytes), 8).toUpperCase(), b45e(bytes)].join('-');
+    };
+    const base = { n: info.name, t: info.mime, s: info.size, z: info.packed, f: total, h: info.hash.slice(0, 16) };
+    const tries = [
+      { ...base, u: info.url },
+      { ...base, n: trim(info.name, 40), u: trim(info.url, 60) },
+      { ...base, n: trim(info.name, 30) },
+      { ...base, n: trim(info.name, 16), h: undefined },
+    ];
+    let frame;
+    for (const o of tries) {
+      frame = build(o);
+      if (frame.length <= budget) break;
+    }
+    return frame;
+  }
+
+  // info(任意): { name, mime, size, packed, hash, url } を渡すとメタ情報フレームも作る
+  function makeFrames(payload, chunkSize, sid, info) {
+    sid = (sid || hex(Math.floor(Math.random() * 0x10000), 4)).toUpperCase();
     const total = Math.max(1, Math.ceil(payload.length / chunkSize));
     const frames = [];
     for (let i = 0; i < total; i++) {
       const chunk = payload.subarray(i * chunkSize, (i + 1) * chunkSize);
-      frames.push([MAGIC, sid, i, total, hex(crc32(chunk), 8), b64e(chunk)].join('|'));
+      frames.push([MAGIC, sid, i, total, hex(crc32(chunk), 8).toUpperCase(), b45e(chunk)].join('-'));
     }
-    return { sid, total, frames };
+    const budget = frames.reduce((m, s) => Math.max(m, s.length), 0);
+    const meta = info ? makeMeta(sid, total, info, budget) : null;
+    return { sid, total, frames, meta };
   }
 
   // ---- 受信側 ----
+  // 先頭5つの区切り(-)までがヘッダ。データ部にも'-'が含まれるので、以降は分割しない
   function parseFrame(str) {
-    const p = String(str).split('|');
-    if (p.length !== 6 || p[0] !== MAGIC) return null;
-    const idx = Number(p[2]);
+    str = String(str);
+    const p = [];
+    let pos = 0;
+    for (let k = 0; k < 5; k++) {
+      const j = str.indexOf('-', pos);
+      if (j < 0) return null;
+      p.push(str.slice(pos, j));
+      pos = j + 1;
+    }
+    const body = str.slice(pos);
+    if (p[0] !== MAGIC || !/^[0-9A-F]{4}$/.test(p[1]) || !/^(\d{1,6}|M)$/.test(p[2]) ||
+        !/^\d{1,6}$/.test(p[3]) || !/^[0-9A-F]{8}$/.test(p[4])) return null;
+    const isMeta = p[2] === 'M';
+    const idx = isMeta ? -1 : Number(p[2]);
     const total = Number(p[3]);
-    if (!/^[0-9a-f]{4}$/.test(p[1]) || !Number.isInteger(idx) || !Number.isInteger(total)) return null;
-    if (total < 1 || idx < 0 || idx >= total) return null;
-    let data;
-    try { data = b64d(p[5]); } catch { return null; }
-    if (hex(crc32(data), 8) !== p[4]) return { bad: true };
+    if (total < 1 || idx >= total) return null;
+    const data = b45d(body);
+    if (!data || hex(crc32(data), 8).toUpperCase() !== p[4]) return { bad: true };
+    if (isMeta) {
+      try {
+        const info = JSON.parse(new TextDecoder().decode(data));
+        if (!info || typeof info !== 'object' || info.f !== total) return { bad: true };
+        return { meta: true, sid: p[1], total, info };
+      } catch { return { bad: true }; }
+    }
     return { sid: p[1], idx, total, data };
   }
 
@@ -12742,14 +12857,21 @@ const QT = (() => {
       this.chunks = new Map();
       this.badCount = 0;
       this.otherCount = 0;
+      this.info = null; // メタ情報フレームの中身
     }
-    // 戻り値: 'new' | 'dup' | 'bad' | 'other' | 'ignored'
+    // 戻り値: 'new' | 'meta' | 'dup' | 'bad' | 'other' | 'ignored'
+    // 最初に読めたフレーム(メタ情報でもデータでも)がセッションを決める
     add(str) {
       const f = parseFrame(str);
       if (!f) return 'ignored';
       if (f.bad) { this.badCount++; return 'bad'; }
       if (this.sid === null) { this.sid = f.sid; this.total = f.total; }
       if (f.sid !== this.sid || f.total !== this.total) { this.otherCount++; return 'other'; }
+      if (f.meta) {
+        if (this.info) return 'dup';
+        this.info = f.info;
+        return 'meta';
+      }
       if (this.chunks.has(f.idx)) return 'dup';
       this.chunks.set(f.idx, f.data);
       return 'new';
@@ -12771,15 +12893,22 @@ const QT = (() => {
       const header = JSON.parse(new TextDecoder().decode(raw.subarray(4, 4 + hl)));
       const bytes = raw.subarray(4 + hl);
       const hash = await sha256hex(bytes);
+      // 先に受け取ったメタ情報があれば、本体と食い違っていないかも確かめる
+      let metaOk = true;
+      if (this.info) {
+        if (this.info.s !== header.s) metaOk = false;
+        if (this.info.h && !hash.startsWith(this.info.h)) metaOk = false;
+      }
       return {
         name: header.n, mime: header.t, size: header.s, url: header.u || null, bytes,
-        ok: hash === header.h && bytes.length === header.s,
+        ok: hash === header.h && bytes.length === header.s && metaOk,
+        metaOk,
         hash,
       };
     }
   }
 
-  return { crc32, makeFrames, parseFrame, pack, Receiver };
+  return { crc32, b45e, b45d, sha256hex, makeFrames, parseFrame, pack, Receiver };
 })();
 
 if (typeof module !== 'undefined') module.exports = QT;
@@ -12801,26 +12930,33 @@ if (typeof module !== 'undefined') module.exports = QT;
     b.addEventListener('click', () => showTab(b.dataset.tab)));
 
   // ---------- QR描画 ----------
+  // フレームは英数字モードの文字だけで作ってあるので、バイトモードより粗いQRになる
   function makeQR(text, ecc, typeNumber) {
     const qr = qrcode(typeNumber, ecc);
-    qr.addData(text, 'Byte');
+    qr.addData(text, 'Alphanumeric');
     qr.make();
     return qr;
   }
 
-  function drawQR(canvas, qr) {
+  // 高解像度で描き、表示側で縮める。モジュールの境界は丸めて、幅が揃うようにする。
+  // 静寂領域(周囲の白い余白)は規格どおり4モジュール。
+  function drawQR(canvas, qr, px) {
+    px = px || 1000;
     const n = qr.getModuleCount();
     const quiet = 4;
-    const scale = Math.max(3, Math.floor(560 / (n + quiet * 2)));
-    const size = (n + quiet * 2) * scale;
-    if (canvas.width !== size) { canvas.width = size; canvas.height = size; }
+    const ms = px / (n + quiet * 2);
+    if (canvas.width !== px) { canvas.width = px; canvas.height = px; }
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, size, size);
+    ctx.fillRect(0, 0, px, px);
     ctx.fillStyle = '#000000';
     for (let r = 0; r < n; r++) {
+      const y0 = Math.round((r + quiet) * ms);
+      const h = Math.round((r + quiet + 1) * ms) - y0;
       for (let c = 0; c < n; c++) {
-        if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+        if (!qr.isDark(r, c)) continue;
+        const x0 = Math.round((c + quiet) * ms);
+        ctx.fillRect(x0, y0, Math.round((c + quiet + 1) * ms) - x0, h);
       }
     }
   }
@@ -12829,7 +12965,7 @@ if (typeof module !== 'undefined') module.exports = QT;
   function fixedType(frames, ecc) {
     const longest = frames.reduce((a, b) => (b.length > a.length ? b : a));
     const probe = qrcode(0, ecc);
-    probe.addData(longest, 'Byte');
+    probe.addData(longest, 'Alphanumeric');
     probe.make();
     return (probe.getModuleCount() - 17) / 4;
   }
@@ -12837,10 +12973,47 @@ if (typeof module !== 'undefined') module.exports = QT;
   const fmtBytes = (n) => (n < 1024 ? n + ' B' : (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB');
 
   // ---------- 送信 ----------
-  const S = { frames: [], total: 0, idx: 0, ecc: 'M', type: 1, playing: false, timer: null, wake: null };
+  // frames[0]がメタ情報フレーム、1以降がデータフレーム(totalは後者の枚数)。
+  // seqは1周の表示順。メタ情報は先頭に2回入れ、受信側が最初に確実に捉えられるようにする。
+  const S = { frames: [], total: 0, seq: [], pos: -1, ecc: 'M', type: 1, playing: false, timer: null, wake: null };
 
-  $('chunk').addEventListener('input', () => { $('chunkOut').textContent = $('chunk').value + ' B'; });
-  $('fps').addEventListener('input', () => { $('fpsOut').textContent = $('fps').value + ' fps'; });
+  // 読み取りやすさのプリセット。QRが粗いほど読みやすいが、全体は遅くなる。
+  const PRESETS = {
+    stable: { chunk: 120, fps: 3, ecc: 'Q' },
+    normal: { chunk: 200, fps: 4, ecc: 'M' },
+    fast: { chunk: 400, fps: 8, ecc: 'L' },
+  };
+
+  function syncOutputs() {
+    $('chunkOut').textContent = $('chunk').value + ' B';
+    $('fpsOut').textContent = $('fps').value + ' fps';
+  }
+
+  function applyPreset(key) {
+    const p = PRESETS[key];
+    if (!p) return;
+    $('chunk').value = p.chunk;
+    $('fps').value = p.fps;
+    $('ecc').value = p.ecc;
+    syncOutputs();
+  }
+
+  function markCustom() {
+    syncOutputs();
+    $('preset').value = 'custom';
+  }
+
+  $('preset').addEventListener('change', () => applyPreset($('preset').value));
+  ['chunk', 'fps'].forEach((id) => $('' + id).addEventListener('input', markCustom));
+  $('ecc').addEventListener('change', markCustom);
+  applyPreset('normal');
+
+  $('sendFull').addEventListener('click', async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await $('sendStage').requestFullscreen();
+    } catch { /* 全画面にできない環境では何もしない */ }
+  });
 
   function sendMsg(text, bad) {
     const el = $('sendMsg');
@@ -12848,16 +13021,19 @@ if (typeof module !== 'undefined') module.exports = QT;
     el.className = 'status' + (bad ? ' bad' : '');
   }
 
-  function showFrame(i) {
-    S.idx = i;
-    drawQR($('qr'), makeQR(S.frames[i], S.ecc, S.type));
-    $('sendCounter').textContent = (i + 1) + ' / ' + S.total;
+  // pos: seq上の位置。表示中のフレームの位置をS.posに持つ。
+  function showFrame(pos) {
+    S.pos = pos;
+    const k = S.seq[pos];
+    drawQR($('qr'), makeQR(S.frames[k], S.ecc, S.type));
+    $('sendCounter').textContent = (k === 0 ? 'メタ情報' : k) + ' / ' + S.total;
   }
+
+  const stepFrame = (d) => showFrame((S.pos + d + S.seq.length) % S.seq.length);
 
   function tick() {
     if (!S.playing) return;
-    showFrame(S.idx);
-    S.idx = (S.idx + 1) % S.total;
+    stepFrame(1);
     S.timer = setTimeout(tick, 1000 / Number($('fps').value));
   }
 
@@ -12876,6 +13052,7 @@ if (typeof module !== 'undefined') module.exports = QT;
     $('sendPrev').disabled = on || !S.total;
     $('sendNext').disabled = on || !S.total;
     $('sendToggle').disabled = !S.total;
+    $('sendFull').disabled = !S.total;
     if (on) { tick(); holdScreen(true); } else { holdScreen(false); }
   }
 
@@ -12961,33 +13138,40 @@ if (typeof module !== 'undefined') module.exports = QT;
     }
     const payload = await QT.pack(name, mime, bytes, meta);
     const chunk = Number($('chunk').value);
-    const made = QT.makeFrames(payload, chunk);
+    const info = {
+      name, mime, size: bytes.length, packed: payload.length,
+      hash: await QT.sha256hex(bytes), url: meta && meta.url,
+    };
+    const made = QT.makeFrames(payload, chunk, null, info);
     S.ecc = $('ecc').value;
+    const all = [made.meta, ...made.frames];
     try {
-      S.type = fixedType(made.frames, S.ecc);
+      S.type = fixedType(all, S.ecc);
     } catch (e) {
       sendMsg('QRに収まりません。1フレームのデータ量を小さくしてください。', true);
       return;
     }
-    S.frames = made.frames;
+    S.frames = all;
     S.total = made.total;
-    S.idx = 0;
+    S.seq = [0, ...all.keys()]; // [メタ, メタ, データ1, データ2, …]
+    S.pos = -1;
     const fps = Number($('fps').value);
+    const cycle = S.seq.length;
     $('sendStage').hidden = false;
     $('sendStats').textContent =
       '元 ' + fmtBytes(bytes.length) + ' → 圧縮後 ' + fmtBytes(payload.length) +
-      ' / ' + S.total + ' フレーム / QR v' + S.type + ' (' + (S.type * 4 + 17) + '×' + (S.type * 4 + 17) + ')' +
-      ' / 1周 約' + (S.total / fps).toFixed(1) + '秒 / ID ' + made.sid;
+      ' / メタ情報 + ' + S.total + ' フレーム / QR v' + S.type + ' (' + (S.type * 4 + 17) + '×' + (S.type * 4 + 17) + ')' +
+      ' / 1周 約' + (cycle / fps).toFixed(1) + '秒 / ID ' + made.sid;
     if (S.total > 300) {
-      sendMsg('フレーム数が多いです(' + S.total + ')。1周に約' + Math.round(S.total / fps) + '秒かかります。データ量や表示速度を上げると短くなります。');
+      sendMsg('フレーム数が多いです(' + S.total + ')。1周に約' + Math.round(cycle / fps) + '秒かかります。データ量や表示速度を上げると短くなります。');
     }
     setPlaying(true);
   }
 
   $('sendStart').addEventListener('click', startSend);
   $('sendToggle').addEventListener('click', () => setPlaying(!S.playing));
-  $('sendPrev').addEventListener('click', () => showFrame((S.idx - 1 + S.total) % S.total));
-  $('sendNext').addEventListener('click', () => showFrame((S.idx + 1) % S.total));
+  $('sendPrev').addEventListener('click', () => stepFrame(-1));
+  $('sendNext').addEventListener('click', () => stepFrame(1));
   $('file').addEventListener('change', () => {
     if ($('file').files[0]) sendMsg('ファイルを送ります: ' + $('file').files[0].name);
     else sendMsg('');
@@ -13033,14 +13217,33 @@ if (typeof module !== 'undefined') module.exports = QT;
     }
   }
 
-  function updateRecvUI() {
-    $('recvCount').textContent = recv.count + ' / ' + recv.total;
-    $('recvBar').style.width = recv.total ? (recv.count / recv.total * 100) + '%' : '0';
+  function updateInfo() {
     const parts = [];
     if (recv.sid) parts.push('ID ' + recv.sid);
     if (recv.badCount) parts.push('破損 ' + recv.badCount);
     if (recv.otherCount) parts.push('別セッション ' + recv.otherCount);
+    if (scanning && hits.length) parts.push('読取 ' + (hits.length / 2).toFixed(1) + '/秒');
     $('recvInfo').textContent = parts.length ? parts.join(' / ') : '待機中';
+  }
+
+  // 先頭のメタ情報フレームを読んだ時点で、何を受信しているかを表示する
+  function showMeta() {
+    const i = recv.info;
+    $('metaCard').hidden = !i;
+    if (!i) return;
+    $('metaName').textContent = i.n || '-';
+    $('metaMime').textContent = i.t || '-';
+    $('metaSize').textContent = fmtBytes(i.s) + (i.z ? '(圧縮後 ' + fmtBytes(i.z) + ')' : '');
+    $('metaFrames').textContent = i.f + ' 枚';
+    $('metaUrl').textContent = i.u || '-';
+    $('metaHash').textContent = i.h ? i.h + '…' : '-';
+  }
+
+  function updateRecvUI() {
+    $('recvCount').textContent = recv.count + ' / ' + recv.total;
+    $('recvBar').style.width = recv.total ? (recv.count / recv.total * 100) + '%' : '0';
+    updateInfo();
+    showMeta();
     drawGrid();
   }
 
@@ -13049,6 +13252,7 @@ if (typeof module !== 'undefined') module.exports = QT;
     cancelAnimationFrame(rafId);
     if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
     video.srcObject = null;
+    $('zoomWrap').hidden = true;
     octx.clearRect(0, 0, overlay.width, overlay.height);
     $('videoIdle').hidden = false;
     $('camStart').disabled = false;
@@ -13062,7 +13266,7 @@ if (typeof module !== 'undefined') module.exports = QT;
     }
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       });
     } catch (e) {
@@ -13071,6 +13275,10 @@ if (typeof module !== 'undefined') module.exports = QT;
     }
     video.srcObject = stream;
     await video.play();
+    setupTrack();
+    lastSeen = performance.now();
+    hinted = false;
+    hits.length = 0;
     $('videoIdle').hidden = true;
     $('camStart').disabled = true;
     $('camStop').disabled = false;
@@ -13079,41 +13287,114 @@ if (typeof module !== 'undefined') module.exports = QT;
     rafId = requestAnimationFrame(scanLoop);
   }
 
-  function scanLoop(t) {
-    if (!scanning) return;
-    rafId = requestAnimationFrame(scanLoop);
-    if (t - lastScan < 45 || video.readyState < 2 || !video.videoWidth) return;
-    lastScan = t;
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const k = Math.min(1, 960 / vw);
-    const w = Math.round(vw * k);
-    const h = Math.round(vh * k);
-    if (scanCanvas.width !== w) { scanCanvas.width = w; scanCanvas.height = h; overlay.width = w; overlay.height = h; }
-    sctx.drawImage(video, 0, 0, w, h);
-    const img = sctx.getImageData(0, 0, w, h);
-    const code = jsQR(img.data, w, h, { inversionAttempts: 'dontInvert' });
-    octx.clearRect(0, 0, w, h);
-    if (!code) return;
-    const L = code.location;
-    octx.strokeStyle = css('--accent');
-    octx.lineWidth = 4;
+  // ブラウザ内蔵のQR検出(BarcodeDetector)があれば優先する。jsQRより速く、傾きやぼけにも強い。
+  // 使えない環境(Safari、Firefoxなど)ではjsQRで読む。
+  let detector = null;
+  let busy = false;
+  let lastSeen = 0;
+  let hinted = false;
+  const hits = []; // 直近2秒に読めたフレームの時刻(読み取り速度の表示用)
+
+  (async () => {
+    try {
+      if ('BarcodeDetector' in window) {
+        const formats = await BarcodeDetector.getSupportedFormats();
+        if (formats.includes('qr_code')) detector = new BarcodeDetector({ formats: ['qr_code'] });
+      }
+    } catch { detector = null; }
+  })();
+
+  function drawBox(points, color) {
+    octx.strokeStyle = color;
+    octx.lineWidth = Math.max(3, overlay.width / 180);
     octx.beginPath();
-    octx.moveTo(L.topLeftCorner.x, L.topLeftCorner.y);
-    octx.lineTo(L.topRightCorner.x, L.topRightCorner.y);
-    octx.lineTo(L.bottomRightCorner.x, L.bottomRightCorner.y);
-    octx.lineTo(L.bottomLeftCorner.x, L.bottomLeftCorner.y);
+    points.forEach((p, i) => (i ? octx.lineTo(p.x, p.y) : octx.moveTo(p.x, p.y)));
     octx.closePath();
     octx.stroke();
-    onCode(code.data);
+  }
+
+  async function scanOnce() {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (overlay.width !== vw || overlay.height !== vh) { overlay.width = vw; overlay.height = vh; }
+    let found = [];
+    if (detector) {
+      const codes = await detector.detect(video);
+      found = codes.map((c) => ({ data: c.rawValue, pts: c.cornerPoints }));
+    } else {
+      // 縮小しすぎるとマスが潰れるので、1280pxまでは原寸に近い解像度で読む
+      const k = Math.min(1, 1280 / vw);
+      const w = Math.round(vw * k);
+      const h = Math.round(vh * k);
+      if (scanCanvas.width !== w || scanCanvas.height !== h) { scanCanvas.width = w; scanCanvas.height = h; }
+      sctx.drawImage(video, 0, 0, w, h);
+      const img = sctx.getImageData(0, 0, w, h);
+      const code = jsQR(img.data, w, h, { inversionAttempts: 'dontInvert' });
+      if (code) {
+        const L = code.location;
+        found = [{
+          data: code.data,
+          pts: [L.topLeftCorner, L.topRightCorner, L.bottomRightCorner, L.bottomLeftCorner]
+            .map((p) => ({ x: p.x / k, y: p.y / k })),
+        }];
+      }
+    }
+    octx.clearRect(0, 0, vw, vh);
+    for (const f of found) {
+      const r = onCode(f.data);
+      if (r === 'ignored') continue;
+      // 新しいフレームは緑、読み済みは通常色、壊れたフレームは赤
+      drawBox(f.pts, css(r === 'new' || r === 'meta' ? '--ok' : r === 'bad' ? '--bad' : '--accent'));
+      lastSeen = performance.now();
+      if (hinted) { hinted = false; recvMsg('読み取り中です。'); }
+    }
+  }
+
+  function scanLoop() {
+    if (!scanning) return;
+    rafId = requestAnimationFrame(scanLoop);
+    if (busy || video.readyState < 2 || !video.videoWidth) return;
+    busy = true;
+    scanOnce().catch(() => {}).finally(() => { busy = false; });
+    if (!hinted && performance.now() - lastSeen > 4000) {
+      hinted = true;
+      recvMsg('QRが見つかりません。QR全体が映る距離で、ピントが合うまで待ってください。画面が暗い、反射している場合は角度を変えてください。');
+    }
+  }
+
+  function setupTrack() {
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.focusMode && caps.focusMode.includes('continuous')) {
+      track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+    }
+    if (caps.zoom) {
+      const z = $('zoom');
+      z.min = caps.zoom.min;
+      z.max = caps.zoom.max;
+      z.step = caps.zoom.step || 0.1;
+      z.value = (track.getSettings().zoom) || caps.zoom.min;
+      $('zoomOut').textContent = Number(z.value).toFixed(1) + 'x';
+      z.oninput = () => {
+        $('zoomOut').textContent = Number(z.value).toFixed(1) + 'x';
+        track.applyConstraints({ advanced: [{ zoom: Number(z.value) }] }).catch(() => {});
+      };
+      $('zoomWrap').hidden = false;
+    } else {
+      $('zoomWrap').hidden = true;
+    }
   }
 
   function onCode(data) {
     const r = recv.add(data);
-    if (r === 'ignored') return;
-    if (r === 'new') updateRecvUI();
-    else if (r === 'bad' || r === 'other') updateRecvUI();
+    if (r === 'ignored') return r;
+    const now = performance.now();
+    hits.push(now);
+    while (hits.length && now - hits[0] > 2000) hits.shift();
+    if (r === 'new' || r === 'meta' || r === 'bad' || r === 'other') updateRecvUI(); else updateInfo();
+    if (r === 'meta') recvMsg('「' + (recv.info.n || '名前なし') + '」(' + fmtBytes(recv.info.s) + ')を受信しています。');
     if (recv.complete) finish();
+    return r;
   }
 
   async function finish() {
@@ -13127,13 +13408,16 @@ if (typeof module !== 'undefined') module.exports = QT;
       return;
     }
     showResult(res);
-    recvMsg(res.ok ? '復元できました。' : '復元しましたが、ハッシュが一致しません。', !res.ok);
+    recvMsg(res.ok ? '復元できました。'
+      : res.metaOk ? '復元しましたが、ハッシュが一致しません。'
+        : '最初に受け取ったメタ情報と中身が一致しません。別の転送が混ざった可能性があります。', !res.ok);
   }
 
   function showResult(res) {
     if (resultUrl) URL.revokeObjectURL(resultUrl);
     resultUrl = URL.createObjectURL(new Blob([res.bytes], { type: res.mime || 'application/octet-stream' }));
     $('result').hidden = false;
+    $('metaCard').hidden = true; // 受信済みなので結果カードに任せる
     $('resBadge').textContent = res.ok ? '整合性 OK' : '整合性 NG';
     $('resBadge').className = 'badge ' + (res.ok ? 'ok' : 'ng');
     $('resName').textContent = res.name;
@@ -13249,7 +13533,7 @@ if (typeof module !== 'undefined') module.exports = QT;
       const decoded = [];
       let readOk = 0;
       for (let i = 0; i < total; i++) {
-        drawQR(canvas, makeQR(frames[i], ecc, type));
+        drawQR(canvas, makeQR(frames[i], ecc, type), 480);
         const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
         decoded.push(code ? code.data : null);
@@ -13259,9 +13543,14 @@ if (typeof module !== 'undefined') module.exports = QT;
       check(readOk === total, 'QRの生成と読み取り ' + readOk + ' / ' + total);
 
       // 2) 破損フレームの検出
-      const broken = frames[0].slice(0, -3) + (frames[0].slice(-3) === 'AAA' ? 'BBB' : 'AAA');
+      const k = frames[0].length - 2;
+      const broken = frames[0].slice(0, k) + (frames[0][k] === '0' ? '1' : '0') + frames[0].slice(k + 1);
       const probe = new QT.Receiver();
       check(probe.add(broken) === 'bad', 'CRCが壊れたフレームを拒否');
+      const all = new Uint8Array(256).map((_, i) => i);
+      const back = QT.b45d(QT.b45e(all));
+      check(back && back.every((b, i) => b === i), 'Base45の往復(全バイト値)');
+      check(frames.every((s) => /^[0-9A-Z $%*+\-./:]+$/.test(s)), '全フレームが英数字モードで描ける文字だけ');
 
       // 3) 欠落・重複・順不同
       const rx = new QT.Receiver();
@@ -13294,6 +13583,27 @@ if (typeof module !== 'undefined') module.exports = QT;
       const hres = await hr.assemble();
       check(hres.ok && hres.mime === 'text/html' && hres.url === 'https://example.com/a/' &&
         new TextDecoder().decode(hres.bytes) === html, 'HTMLと取得元URLが往復で一致');
+
+      // 7) 先頭のメタ情報
+      const info = {
+        name: 'selftest.txt', mime: 'text/plain', size: bytes.length,
+        packed: payload.length, hash: await QT.sha256hex(bytes),
+      };
+      const mm = QT.makeFrames(payload, 300, null, info);
+      const longest = Math.max(...mm.frames.map((s) => s.length));
+      check(mm.meta && mm.meta.length <= longest, 'メタ情報フレームはデータフレームと同じ大きさに収まる');
+      const mr = new QT.Receiver();
+      check(mr.add(mm.meta) === 'meta' && mr.info.n === 'selftest.txt' && mr.total === mm.total && mr.count === 0,
+        'メタ情報だけで名前・サイズ・フレーム数が分かる');
+      check(mr.add(mm.meta) === 'dup', 'メタ情報の重複は無視');
+      mm.frames.forEach((s) => mr.add(s));
+      const mres = await mr.assemble();
+      check(mres.ok && mres.metaOk, 'メタ情報と本体が一致');
+      const forged = QT.makeFrames(payload, 300, mm.sid, { ...info, hash: '0'.repeat(64) });
+      const fr = new QT.Receiver();
+      fr.add(forged.meta);
+      mm.frames.forEach((s) => fr.add(s));
+      check(!(await fr.assemble()).ok, 'メタ情報と本体が食い違えば不一致と判定');
     } catch (e) {
       check(false, '例外: ' + e.message);
     }
