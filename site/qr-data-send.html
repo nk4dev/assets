@@ -64,7 +64,7 @@ p { margin: 0; }
 section[data-panel] { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field label, .label { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
-textarea, select, input[type="file"] {
+textarea, select, input[type="file"], input[type="url"], input[type="text"] {
   width: 100%; font: inherit; color: var(--ink); background: var(--surface);
   border: 1px solid var(--line); border-radius: 6px; padding: 10px;
 }
@@ -101,6 +101,12 @@ button.btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .readout { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font: 13px var(--font-data); font-variant-numeric: tabular-nums; }
 .readout .muted { color: var(--muted); }
 
+code { font: 12px var(--font-data); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; overflow-wrap: anywhere; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 0.88rem; color: var(--muted); cursor: pointer; }
+.check input { accent-color: var(--accent); }
+.viewer { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.viewopts { display: flex; gap: 8px 18px; flex-wrap: wrap; }
+.viewer iframe { display: block; width: 100%; height: min(70vh, 480px); border: 1px solid var(--line); border-radius: 6px; background: #fff; }
 .notice { font-size: 0.85rem; color: var(--muted); border-left: 2px solid var(--line); padding-left: 10px; }
 .notice.warn { border-color: var(--warn); color: var(--warn); }
 .status { font-size: 0.9rem; min-height: 1.4em; }
@@ -139,9 +145,19 @@ pre.preview { margin: 0; max-height: 220px; overflow: auto; background: var(--bg
   <!-- 送信 -->
   <section data-panel="send">
     <div class="field">
+      <label for="url">サイトのURL(入力するとHTMLを取得して送る。ファイル・テキストより優先)</label>
+      <input id="url" type="url" inputmode="url" placeholder="https://example.com/" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="proxy">直接取得できないときのプロキシ(<code>{url}</code>が対象URLに置き換わる。空欄ならプロキシなし)</label>
+      <input id="proxy" type="text" value="https://api.allorigins.win/raw?url={url}" autocomplete="off" spellcheck="false">
+      <p class="notice">多くのサイトはブラウザの制限(CORS)で直接取得できません。プロキシを使うと、取得するURLがそのサービスに渡ります。同梱のserve.jsを使う場合は <code>/proxy?url={url}</code> にします。</p>
+    </div>
+    <div class="field">
       <label for="text">送るテキスト</label>
       <textarea id="text" spellcheck="false">こんにちは。これはQRコードだけで転送されたテキストです。
 Hello from a stream of QR codes.</textarea>
+      <label class="check"><input type="checkbox" id="textIsHtml"> このテキストをHTMLとして送る(取得できないサイトのHTMLを貼る用)</label>
     </div>
     <div class="field">
       <label for="file">またはファイル(1MBまで。選ぶとテキストより優先)</label>
@@ -201,8 +217,17 @@ Hello from a stream of QR codes.</textarea>
         <dt>種類</dt><dd id="resMime"></dd>
         <dt>SHA-256</dt><dd id="resHash"></dd>
       </dl>
+      <div class="viewer" id="viewer" hidden>
+        <div class="viewopts">
+          <label class="check"><input type="checkbox" id="optBase" checked> 元サイトのCSS・画像を読み込む</label>
+          <label class="check"><input type="checkbox" id="optScript"> スクリプトを実行する</label>
+        </div>
+        <iframe id="resFrame" title="復元したHTMLの表示" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+        <p class="notice" id="viewNote"></p>
+      </div>
       <pre class="preview" id="resPreview" hidden></pre>
       <div class="btns">
+        <button type="button" class="btn" id="resView" hidden>ソースを表示</button>
         <button type="button" class="btn primary" id="resDownload">ダウンロード</button>
         <button type="button" class="btn" id="resCopy" hidden>テキストをコピー</button>
       </div>
@@ -12672,10 +12697,11 @@ const QT = (() => {
   }
 
   // ---- 送信側 ----
-  async function pack(name, mime, bytes) {
-    const header = new TextEncoder().encode(JSON.stringify({
-      n: name, t: mime, s: bytes.length, h: await sha256hex(bytes),
-    }));
+  // extra.url: 取得元URL(受信側で相対パスの解決に使う)
+  async function pack(name, mime, bytes, extra) {
+    const meta = { n: name, t: mime, s: bytes.length, h: await sha256hex(bytes) };
+    if (extra && extra.url) meta.u = extra.url;
+    const header = new TextEncoder().encode(JSON.stringify(meta));
     const raw = new Uint8Array(4 + header.length + bytes.length);
     new DataView(raw.buffer).setUint32(0, header.length);
     raw.set(header, 4);
@@ -12746,7 +12772,7 @@ const QT = (() => {
       const bytes = raw.subarray(4 + hl);
       const hash = await sha256hex(bytes);
       return {
-        name: header.n, mime: header.t, size: header.s, bytes,
+        name: header.n, mime: header.t, size: header.s, url: header.u || null, bytes,
         ok: hash === header.h && bytes.length === header.s,
         hash,
       };
@@ -12853,11 +12879,74 @@ if (typeof module !== 'undefined') module.exports = QT;
     if (on) { tick(); holdScreen(true); } else { holdScreen(false); }
   }
 
+  // 取得したバイト列を文字コードに従って読み、UTF-8に正規化する
+  function decodeToUtf8(buf, contentType) {
+    let cs = (/charset=["']?([\w-]+)/i.exec(contentType || '') || [])[1];
+    if (!cs) {
+      const head = new TextDecoder('latin1').decode(buf.subarray(0, 2048));
+      cs = (/<meta[^>]+charset=["']?([\w-]+)/i.exec(head) || [])[1];
+    }
+    let text;
+    try { text = new TextDecoder(cs || 'utf-8').decode(buf); }
+    catch { text = new TextDecoder('utf-8').decode(buf); }
+    return new TextEncoder().encode(text);
+  }
+
+  async function fetchPage(url) {
+    const tpl = $('proxy').value.trim();
+    const attempts = [{ label: '直接', href: url }];
+    if (tpl) attempts.push({ label: 'プロキシ', href: tpl.replace('{url}', encodeURIComponent(url)) });
+    const errors = [];
+    for (const a of attempts) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 20000);
+      try {
+        const res = await fetch(a.href, { signal: ctl.signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const buf = new Uint8Array(await res.arrayBuffer());
+        const bytes = decodeToUtf8(buf, res.headers.get('content-type'));
+        if (bytes.length > MAX_BYTES) throw new Error('HTMLが大きすぎます(1MBまで)');
+        return { bytes, via: a.label };
+      } catch (e) {
+        errors.push(a.label + ': ' + (e.name === 'AbortError' ? 'タイムアウト' : e.message));
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error(errors.join(' / '));
+  }
+
   async function startSend() {
     sendMsg('');
-    let name, mime, bytes;
+    let name, mime, bytes, meta = null, via = '';
+    const urlStr = $('url').value.trim();
     const f = $('file').files[0];
-    if (f) {
+    if (urlStr) {
+      let u;
+      try {
+        u = new URL(urlStr);
+        if (!/^https?:$/.test(u.protocol)) throw new Error('scheme');
+      } catch {
+        sendMsg('URLの形式が正しくありません。https://から入力してください。', true);
+        return;
+      }
+      $('sendStart').disabled = true;
+      sendMsg('取得中です…');
+      try {
+        const r = await fetchPage(u.href);
+        bytes = r.bytes;
+        via = r.via;
+      } catch (e) {
+        sendMsg('取得できませんでした(' + e.message + ')。プロキシを設定するか、HTMLをテキスト欄に貼って「HTMLとして送る」を使ってください。', true);
+        return;
+      } finally {
+        $('sendStart').disabled = false;
+      }
+      name = u.hostname + '.html';
+      mime = 'text/html';
+      meta = { url: u.href };
+      sendMsg('取得しました: ' + fmtBytes(bytes.length) + '(' + via + ')');
+    } else if (f) {
       if (f.size > MAX_BYTES) { sendMsg('ファイルが大きすぎます(1MBまで)。', true); return; }
       bytes = new Uint8Array(await f.arrayBuffer());
       name = f.name;
@@ -12866,10 +12955,11 @@ if (typeof module !== 'undefined') module.exports = QT;
       const t = $('text').value;
       if (!t) { sendMsg('テキストを入力するか、ファイルを選んでください。', true); return; }
       bytes = new TextEncoder().encode(t);
-      name = 'text.txt';
-      mime = 'text/plain';
+      const asHtml = $('textIsHtml').checked;
+      name = asHtml ? 'page.html' : 'text.txt';
+      mime = asHtml ? 'text/html' : 'text/plain';
     }
-    const payload = await QT.pack(name, mime, bytes);
+    const payload = await QT.pack(name, mime, bytes, meta);
     const chunk = Number($('chunk').value);
     const made = QT.makeFrames(payload, chunk);
     S.ecc = $('ecc').value;
@@ -12888,7 +12978,9 @@ if (typeof module !== 'undefined') module.exports = QT;
       '元 ' + fmtBytes(bytes.length) + ' → 圧縮後 ' + fmtBytes(payload.length) +
       ' / ' + S.total + ' フレーム / QR v' + S.type + ' (' + (S.type * 4 + 17) + '×' + (S.type * 4 + 17) + ')' +
       ' / 1周 約' + (S.total / fps).toFixed(1) + '秒 / ID ' + made.sid;
-    if (S.total > 300) sendMsg('フレーム数が多いです。データ量を増やすか、小さいファイルで試してください。');
+    if (S.total > 300) {
+      sendMsg('フレーム数が多いです(' + S.total + ')。1周に約' + Math.round(S.total / fps) + '秒かかります。データ量や表示速度を上げると短くなります。');
+    }
     setPlaying(true);
   }
 
@@ -12914,6 +13006,9 @@ if (typeof module !== 'undefined') module.exports = QT;
   let lastScan = 0;
   let resultUrl = null;
   let resultText = null;
+  let resultSrc = null; // 取得元URL
+  let resultIsHtml = false;
+  let showingSource = false;
 
   function recvMsg(text, bad) {
     const el = $('recvMsg');
@@ -13045,11 +13140,24 @@ if (typeof module !== 'undefined') module.exports = QT;
     $('resSize').textContent = fmtBytes(res.size) + ' (' + res.size + ' bytes)';
     $('resMime').textContent = res.mime;
     $('resHash').textContent = res.hash;
-    const isText = /^text\//.test(res.mime) && res.size < 200 * 1024;
+    const isText = /^text\//.test(res.mime) && res.size < 1024 * 1024;
     resultText = isText ? new TextDecoder().decode(res.bytes) : null;
-    $('resPreview').hidden = !isText;
-    $('resPreview').textContent = resultText || '';
+    resultSrc = res.url;
+    resultIsHtml = isText && /^text\/html/.test(res.mime);
+    showingSource = false;
     $('resCopy').hidden = !isText;
+    $('resView').hidden = !resultIsHtml;
+    $('resView').textContent = 'ソースを表示';
+    $('viewer').hidden = !resultIsHtml;
+    $('resPreview').hidden = !isText || resultIsHtml;
+    $('resPreview').textContent = isText && !resultIsHtml ? resultText.slice(0, 20000) : '';
+    if (resultIsHtml) {
+      $('optBase').disabled = !resultSrc;
+      $('optBase').checked = !!resultSrc;
+      renderFrame();
+    } else {
+      $('resFrame').srcdoc = '';
+    }
     $('resDownload').onclick = () => {
       const a = document.createElement('a');
       a.href = resultUrl;
@@ -13060,6 +13168,37 @@ if (typeof module !== 'undefined') module.exports = QT;
     };
   }
 
+  const escAttr = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+  // 復元したHTMLをサンドボックス付きiframeに表示する。
+  // allow-same-originを付けないので、中のページはこのページにも通信にも触れない。
+  function renderFrame() {
+    if (resultText == null) return;
+    const useBase = $('optBase').checked && resultSrc;
+    const tag = useBase
+      ? '<base href="' + escAttr(resultSrc) + '" target="_blank">'
+      : '<base target="_blank">';
+    const doc = /<head[^>]*>/i.test(resultText)
+      ? resultText.replace(/<head[^>]*>/i, (m) => m + tag)
+      : tag + resultText;
+    const frame = $('resFrame');
+    frame.setAttribute('sandbox',
+      'allow-popups allow-popups-to-escape-sandbox' + ($('optScript').checked ? ' allow-scripts' : ''));
+    frame.srcdoc = doc;
+    $('viewNote').textContent = (resultSrc ? '取得元: ' + resultSrc + '。' : '') +
+      (useBase ? '' : 'CSSや画像は読み込まれません。') +
+      ($('optScript').checked ? '' : 'スクリプトは動きません。');
+  }
+  $('optBase').addEventListener('change', renderFrame);
+  $('optScript').addEventListener('change', renderFrame);
+  $('resView').addEventListener('click', () => {
+    showingSource = !showingSource;
+    $('viewer').hidden = showingSource;
+    $('resPreview').hidden = !showingSource;
+    if (showingSource) $('resPreview').textContent = resultText.slice(0, 20000) + (resultText.length > 20000 ? '\n…(以降省略)' : '');
+    $('resView').textContent = showingSource ? '表示に戻る' : 'ソースを表示';
+  });
+
   $('resCopy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(resultText || ''); recvMsg('コピーしました。'); }
     catch { recvMsg('コピーできませんでした。プレビューを選択してコピーしてください。', true); }
@@ -13068,6 +13207,7 @@ if (typeof module !== 'undefined') module.exports = QT;
   function resetRecv() {
     recv.reset();
     $('result').hidden = true;
+    $('resFrame').srcdoc = '';
     recvMsg(scanning ? '読み取り中です。' : '送信側のQRにカメラを向けてください。');
     updateRecvUI();
   }
@@ -13145,6 +13285,15 @@ if (typeof module !== 'undefined') module.exports = QT;
       // 5) 別セッションの混入
       const other = QT.makeFrames(payload, 300, 'ffff').frames[0];
       check(rx.add(other) === 'other', '別セッションのフレームを無視');
+
+      // 6) HTML + 取得元URLの往復
+      const html = '<!doctype html><html><head><title>t</title></head><body><h1>日本語</h1></body></html>';
+      const hp = await QT.pack('example.com.html', 'text/html', new TextEncoder().encode(html), { url: 'https://example.com/a/' });
+      const hr = new QT.Receiver();
+      QT.makeFrames(hp, 300).frames.forEach((fr) => hr.add(fr));
+      const hres = await hr.assemble();
+      check(hres.ok && hres.mime === 'text/html' && hres.url === 'https://example.com/a/' &&
+        new TextDecoder().decode(hres.bytes) === html, 'HTMLと取得元URLが往復で一致');
     } catch (e) {
       check(false, '例外: ' + e.message);
     }
@@ -13154,6 +13303,7 @@ if (typeof module !== 'undefined') module.exports = QT;
   $('testRun').addEventListener('click', runTest);
 
   updateRecvUI();
+  window.qtFeed = onCode; // 自動テスト用: カメラを介さずにQRの内容を受信側へ渡す
   window.addEventListener('pagehide', () => { stopCamera(); setPlaying(false); });
 })();
 </script>
